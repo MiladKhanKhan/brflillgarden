@@ -148,12 +148,32 @@ function ChartTip({ active, payload, label }) {
     {payload.filter((p) => !Array.isArray(p.value) && p.value != null).map((p) => (
       <div key={p.dataKey} style={{ color: p.color }}>{p.name}: {kr(p.value)}</div>
     ))}
+    {row?.isYtd && (
+      <div style={{ color: T.faint, marginTop: 4, fontStyle: "italic" }}>Faktiskt utfall hittills i år</div>
+    )}
     {row?.isForecast && row?.spann && (
       <div style={{ color: T.faint, marginTop: 4 }}>
-        Spann: {kr(row.spann.worst)} – {kr(row.spann.best)}
+        Prognos · spann: {kr(row.spann.worst)} – {kr(row.spann.best)}
       </div>
     )}
+    {row?.isForecast && !row?.spann && (
+      <div style={{ color: T.faint, marginTop: 4, fontStyle: "italic" }}>Helårsprognos</div>
+    )}
   </div>);
+}
+
+/* ---------- expandable "Vad ingår?" explanation ---------- */
+function Explainer({ children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}
+      style={{ marginTop: 10, borderTop: `1px solid ${T.line}`, paddingTop: 8 }}>
+      <summary style={{ cursor: "pointer", fontSize: 11, color: T.faint, fontWeight: 600, listStyle: "none", letterSpacing: "0.05em" }}>
+        {open ? "DÖLJ" : "VAD INGÅR?"}
+      </summary>
+      <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 6, lineHeight: 1.5 }}>{children}</div>
+    </details>
+  );
 }
 
 /* ---------- period/year toggle ---------- */
@@ -207,82 +227,113 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     });
   }, [sorted]);
 
-  /* ---- Resultatprognos, metod 2: säsongsmall + kända justeringar + osäkerhetsspann ----
-     För varje kvartal som saknas i innevarande år:
-     1. Utgå från samma kvartal föregående år (säsongsmall).
-     2. Justera kända poster: årsavgift = årets faktiska nivå, räntekostnad = årets
-        verkliga kvartalsränta, avskrivningar = känd nivå.
-     3. Osäkerhetsspann: variera driftskostnaderna mellan historiskt min och max
-        för samma kvartal (fångar el- och underhållsvariation). */
-  const forecast = useMemo(() => {
+  /* ---- Säsongsbaserad prognos (metod 2) för innevarande, ofullständigt år ----
+     Princip: för varje kvartal som saknas, använd samma kvartal föregående år
+     som mall, men justera kända poster (årsavgift, ränta, avskrivningar) till
+     årets faktiska nivå. Tillämpas på resultat, drift och ränta.
+     Dessutom: om ett kvartal i innevarande år har 0 i räntekostnad men det
+     finns "upplupna räntekostnader" i balansräkningen, behandla det som om
+     räntan vore bokförd – det är bara en periodiseringseffekt. */
+  const forecastData = useMemo(() => {
     const curYear = latest.year;
     const curQs = sorted.filter((p) => p.year === curYear);
-    if (curQs.length >= 4) return null; // året komplett, ingen prognos behövs
+    if (curQs.length >= 4 || curQs.length === 0) return null;
 
-    const ytd = curQs.reduce((s, p) => s + resultOf(p), 0);
-
-    // kända justeringar
-    const arsavgQ = num(latest.rr.arsavgifter); // årets avgiftsnivå per kvartal
-    const avskrQ = 144273; // deterministisk
-    // verklig kvartalsränta: senaste nollskilda i år, annars snitt föreg. år
+    // Verklig kvartalsränta: senaste nollskilda värdet i år, annars föreg. års snitt
     const rantaVals = curQs.map((p) => num(p.rr.rantekostnader)).filter((v) => v > 0);
     const prevYearQs = sorted.filter((p) => p.year === curYear - 1);
     const rantaQ = rantaVals.length
       ? rantaVals[rantaVals.length - 1]
       : prevYearQs.reduce((s, p) => s + num(p.rr.rantekostnader), 0) / (prevYearQs.length || 1);
 
+    const adjResultOf = (p) => {
+      if (num(p.rr.rantekostnader) > 0) return resultOf(p);
+      return resultOf(p) - rantaQ;
+    };
+    const adjRantaOf = (p) => (num(p.rr.rantekostnader) > 0 ? num(p.rr.rantekostnader) : rantaQ);
+
+    const ytdRes = curQs.reduce((s, p) => s + adjResultOf(p), 0);
+    const ytdDrift = curQs.reduce((s, p) => s + driftOf(p), 0);
+    const ytdRanta = curQs.reduce((s, p) => s + adjRantaOf(p), 0);
+
+    const arsavgQ = num(latest.rr.arsavgifter);
+    const avskrQ = 144273;
+    const curYearNum = curYear;
+    const ytdLabel = `${curYearNum} hittills (Q1–Q${curQs.length})`;
+
     const missingQs = [1, 2, 3, 4].filter((q) => !curQs.some((p) => p.q === q));
-    let base = ytd, best = ytd, worst = ytd;
+    let base = ytdRes, best = ytdRes, worst = ytdRes;
+    let driftBase = ytdDrift, driftBest = ytdDrift, driftWorst = ytdDrift;
+    let rantaBase = ytdRanta;
+
     for (const q of missingQs) {
       const candidates = sorted.filter((p) => p.q === q && p.year < curYear);
       if (!candidates.length) {
-        // fallback: linjär run-rate för detta kvartal
-        const rate = ytd / curQs.length;
+        const rate = ytdRes / curQs.length;
         base += rate; best += rate; worst += rate;
+        driftBase += ytdDrift / curQs.length;
+        driftBest += ytdDrift / curQs.length;
+        driftWorst += ytdDrift / curQs.length;
+        rantaBase += rantaQ;
         continue;
       }
-      const tmpl = candidates[candidates.length - 1]; // senaste året med detta kvartal
+      const tmpl = candidates[candidates.length - 1];
       const adjRR = { ...tmpl.rr, arsavgifter: arsavgQ, rantekostnader: rantaQ, avskrivningar: avskrQ };
       const adjResult = RR.reduce((s, a) => s + (a.s === "in" ? num(adjRR[a.k]) : -num(adjRR[a.k])), 0);
       const tmplDrift = DRIFT.reduce((s, k) => s + num(adjRR[k]), 0);
       const drifts = candidates.map(driftOf);
       const minDrift = Math.min(...drifts), maxDrift = Math.max(...drifts);
       base += adjResult;
-      best += adjResult + (tmplDrift - minDrift);   // lägre drift -> bättre resultat
-      worst += adjResult - (maxDrift - tmplDrift);  // högre drift -> sämre resultat
+      best += adjResult + (tmplDrift - minDrift);
+      worst += adjResult - (maxDrift - tmplDrift);
+      driftBase += tmplDrift;
+      driftBest += minDrift;
+      driftWorst += maxDrift;
+      rantaBase += rantaQ;
     }
 
-    const prevAccum = yearly.length ? yearly[yearly.length - 1].ackumulerat : 0;
     return {
-      label: `${curYear} prognos`, year: curYear, isForecast: true,
-      resultat: base, err: [base - worst, best - base],
-      ackumulerat: prevAccum - (yearly.length ? yearly[yearly.length - 1].resultat : 0) + base,
-      likviditet: null, lan: null,
-      drift: null, ranta: null,
-      spann: { best, worst },
+      curYear,
+      ytdRow: {
+        label: ytdLabel, isYtd: true,
+        resultat: ytdRes, drift: ytdDrift, ranta: ytdRanta,
+        likviditet: num(latest.br.kassa_bank), lan: num(latest.br.fastighetslan),
+      },
+      forecastRow: {
+        label: `${curYear} prognos`, isForecast: true,
+        resultat: base, err: [base - worst, best - base], spann: { best, worst },
+        drift: driftBase,
+        driftErr: [driftBase - driftBest, driftWorst - driftBase],
+        driftSpann: { best: driftBest, worst: driftWorst },
+        ranta: rantaBase,
+        likviditet: num(latest.br.kassa_bank), lan: num(latest.br.fastighetslan),
+      },
     };
-  }, [sorted, yearly, latest]);
+  }, [sorted, latest]);
 
-  // enkel linjär prognos för drift & ränta i årsvyn (jämna poster över året)
-  const linForecast = useMemo(() => {
-    const cur = yearly[yearly.length - 1];
-    if (!cur || cur.nQ >= 4) return null;
-    const f = 4 / cur.nQ;
-    return { drift: cur.drift * f, ranta: cur.ranta * f, label: `${cur.year} prognos`, isForecast: true };
-  }, [yearly]);
+  // I årsvyn: visa tidigare år som vanligt, plus två staplar för innevarande år
+  // (YTD och prognos) sida vid sida.
+  const buildYearSeries = (extraFields = []) => {
+    if (!forecastData) return yearly;
+    const completed = yearly.slice(0, -1);
+    const ytd = forecastData.ytdRow;
+    const fc = forecastData.forecastRow;
+    const prevAccum = completed.length ? completed[completed.length - 1].ackumulerat : 0;
+    return [
+      ...completed,
+      // YTD: ingen ackumulerat-punkt så linjen hoppar inte fram och tillbaka
+      { ...ytd, ackumulerat: null },
+      { ...fc, ackumulerat: prevAccum + fc.resultat },
+    ];
+  };
 
-  // i årsvyn: ersätt innevarande (ofullständigt) år med prognosen i resultatgrafen
-  const resultSeries = vResult === "q"
-    ? quarterly
-    : forecast
-      ? [...yearly.slice(0, -1).map(y => ({ ...y })), { ...forecast }]
-      : yearly;
+  const resultSeries = vResult === "q" ? quarterly : buildYearSeries();
   const likvSeries = vLikv === "q" ? quarterly : yearly;
   const lanSeries = vLan === "q" ? quarterly : yearly;
-  const driftSeries = vDrift === "q" ? quarterly
-    : linForecast ? [...yearly.slice(0, -1), { ...yearly[yearly.length - 1], label: linForecast.label, drift: linForecast.drift, isForecast: true }] : yearly;
-  const rantaSeries = vRanta === "q" ? quarterly
-    : linForecast ? [...yearly.slice(0, -1), { ...yearly[yearly.length - 1], label: linForecast.label, ranta: linForecast.ranta, isForecast: true }] : yearly;
+  const driftSeries = vDrift === "q" ? quarterly : buildYearSeries().map(r =>
+    r.isForecast ? { ...r, err: r.driftErr, spann: r.driftSpann } : r
+  );
+  const rantaSeries = vRanta === "q" ? quarterly : buildYearSeries();
 
   const driftKvm = boyta ? (driftOf(latest) * 4) / boyta : null;
   const skuldKvm = boyta ? num(latest.br.fastighetslan) / boyta : null;
@@ -308,7 +359,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
           {vResult === "q"
             ? "resultat per kvartal · grön = överskott, röd = underskott"
-            : "helårsresultat · linje = ackumulerat över åren · felstapel = osäkerhetsspann för prognosen"}
+            : "helår · ljus stapel = innevarande år hittills, blekare = helårsprognos · felstapel = osäkerhetsspann"}
         </p>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={resultSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -318,13 +369,27 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
             <Tooltip content={<ChartTip />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             <Bar dataKey="resultat" name={vResult === "q" ? "Resultat" : "Helårsresultat"} radius={[3, 3, 0, 0]}>
-              {resultSeries.map((d, i) => <Cell key={i} fill={d.isForecast ? T.faint : d.resultat >= 0 ? T.green : T.clay}
-                fillOpacity={d.isForecast ? 0.5 : 1} />)}
+              {resultSeries.map((d, i) => {
+                const fill = d.resultat >= 0 ? T.green : T.clay;
+                const opacity = d.isForecast ? 0.45 : d.isYtd ? 0.75 : 1;
+                return <Cell key={i} fill={fill} fillOpacity={opacity} />;
+              })}
               {vResult === "y" && <ErrorBar dataKey="err" width={8} strokeWidth={2} stroke={T.ink} />}
             </Bar>
             {vResult === "y" && <Line dataKey="ackumulerat" name="Ackumulerat" stroke={T.ink} strokeWidth={2} dot={{ r: 3 }} />}
           </ComposedChart>
         </ResponsiveContainer>
+        <Explainer>
+          <strong>Resultat</strong> = totala intäkter minus totala kostnader för perioden. För BRF Lillgården består det av:
+          <ul style={{ marginTop: 4, paddingLeft: 18, listStyle: "disc" }}>
+            <li><strong>Intäkter:</strong> årsavgifter, debiterad el och vatten till medlemmar, p-platsavgifter, pantsättnings- och överlåtelseavgifter.</li>
+            <li><strong>Driftskostnader:</strong> el, vatten, avfall, försäkring, bredband, skötsel &amp; underhåll (se egen graf nedan).</li>
+            <li><strong>Förvaltning &amp; admin:</strong> förvaltningsarvode, revision, bankkostnader, övrig administration.</li>
+            <li><strong>Personal:</strong> löner och arbetsgivaravgifter (förekommer främst Q2).</li>
+            <li><strong>Avskrivningar:</strong> ~144 tkr/kvartal, deterministisk bokföringspost för byggnaden.</li>
+            <li><strong>Räntekostnad:</strong> egen graf nedan.</li>
+          </ul>
+        </Explainer>
       </Card>
 
       <Card title="Likviditet" hint={<ViewToggle value={vLikv} onChange={setVLikv} />}>
@@ -338,6 +403,9 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
             <Bar dataKey="likviditet" name="Likviditet" fill={T.blue} radius={[3, 3, 0, 0]} />
           </ComposedChart>
         </ResponsiveContainer>
+        <Explainer>
+          <strong>Likviditet</strong> = saldot på föreningens bankkonton vid periodens slut. Hos er ligger pengarna huvudsakligen på SEB-kontot (1930). Beloppet visar hur mycket kontanta medel föreningen har att röra sig med – för löpande betalningar, oförutsedda reparationer och buffert mot ränteuppgångar. Det är inte samma sak som föreningens resultat: ett bra resultat kan finnas på papperet (t.ex. via avskrivningar som inte är kassaflöde) utan att likviditeten ökar lika mycket.
+        </Explainer>
       </Card>
 
       <Card title="Fastighetslån" hint={<ViewToggle value={vLan} onChange={setVLan} />}>
@@ -351,11 +419,19 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
             <Line dataKey="lan" name="Fastighetslån" stroke={T.gold} strokeWidth={2} dot={{ r: 3 }} />
           </LineChart>
         </ResponsiveContainer>
+        <Explainer>
+          <strong>Fastighetslån</strong> = den totala skulden till kreditinstitut vid periodens slut, dvs. lånen som finansierar byggnaden. Sedan 2025 har Lillgården två lån, båda hos Stadshypotek:
+          <ul style={{ marginTop: 4, paddingLeft: 18, listStyle: "disc" }}>
+            <li>Lån 17-332848-461366: 16 000 000 kr (amorteringsfritt under perioden som visas).</li>
+            <li>Lån 17-332848-461369: ca 7,87 mkr (amorteras med ~62 500 kr per kvartal, dvs. 250 tkr/år).</li>
+          </ul>
+          Den löpande nedgången i grafen är alltså amorteringen av det mindre lånet. Det är den här siffran som ligger till grund för nyckeltalet <em>skuld per kvadratmeter</em>, det enskilt viktigaste hälsomåttet för en BRF.
+        </Explainer>
       </Card>
 
       <Card title="Driftskostnader" hint={<ViewToggle value={vDrift} onChange={setVDrift} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
-          {vDrift === "q" ? "säsongsvariation per kvartal" : "totalt per år (streckad = prognos)"}
+          {vDrift === "q" ? "säsongsvariation per kvartal" : "helår · ljus stapel = innevarande år hittills, blekare = helårsprognos · felstapel = osäkerhetsspann"}
         </p>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={driftSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -364,15 +440,31 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
             <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
             <Tooltip content={<ChartTip />} />
             <Bar dataKey="drift" name="Driftskostnader" radius={[3, 3, 0, 0]}>
-              {driftSeries.map((d, i) => <Cell key={i} fill={T.blue} fillOpacity={d.isForecast ? 0.5 : 1} />)}
+              {driftSeries.map((d, i) => {
+                const opacity = d.isForecast ? 0.45 : d.isYtd ? 0.75 : 1;
+                return <Cell key={i} fill={T.blue} fillOpacity={opacity} />;
+              })}
+              {vDrift === "y" && <ErrorBar dataKey="err" width={8} strokeWidth={2} stroke={T.ink} />}
             </Bar>
           </ComposedChart>
         </ResponsiveContainer>
+        <Explainer>
+          <strong>Driftskostnader</strong> är de löpande kostnaderna för att driva fastigheten. I dashboarden ingår sex poster, motsvarande BAS-kontona 4xxx:
+          <ul style={{ marginTop: 4, paddingLeft: 18, listStyle: "disc" }}>
+            <li><strong>Fastighetsel</strong> (konto 4611) – den i särklass största posten, varierar kraftigt med säsong.</li>
+            <li><strong>Vatten</strong> (4630) – relativt stabil, runt 12–13 tkr per kvartal.</li>
+            <li><strong>Avfall &amp; renhållning</strong> (4640) – fast taxa via kommunen.</li>
+            <li><strong>Fastighetsförsäkring</strong> (4710) – bokförs delvis ojämnt över året.</li>
+            <li><strong>Bredband</strong> (4762) – fast månadsabonnemang.</li>
+            <li><strong>Skötsel &amp; underhåll</strong> (4513, 4549, 4570, 4571) – serviceavtal, utemiljö, besiktningar och löpande underhåll.</li>
+          </ul>
+          Ingår <strong>inte</strong> här: avskrivningar, räntekostnader, förvaltnings- och revisionsarvoden, personalkostnader – dessa redovisas separat.
+        </Explainer>
       </Card>
 
       <Card title="Räntekostnad" hint={<ViewToggle value={vRanta} onChange={setVRanta} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
-          {vRanta === "q" ? "lägre är bättre" : "totalt per år (streckad = prognos)"}
+          {vRanta === "q" ? "lägre är bättre · 0-kvartal = upplupen ränta i balansräkningen" : "helår · ljus stapel = innevarande år hittills, blekare = helårsprognos (justerad för dagens räntenivå)"}
         </p>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={rantaSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -381,10 +473,22 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
             <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
             <Tooltip content={<ChartTip />} />
             <Bar dataKey="ranta" name="Räntekostnad" radius={[3, 3, 0, 0]}>
-              {rantaSeries.map((d, i) => <Cell key={i} fill={T.gold} fillOpacity={d.isForecast ? 0.5 : 1} />)}
+              {rantaSeries.map((d, i) => {
+                const opacity = d.isForecast ? 0.45 : d.isYtd ? 0.75 : 1;
+                return <Cell key={i} fill={T.gold} fillOpacity={opacity} />;
+              })}
             </Bar>
           </ComposedChart>
         </ResponsiveContainer>
+        <Explainer>
+          <strong>Räntekostnad</strong> = den ränta föreningen betalar till sina långivare på fastighetslånen (BAS-konto 8415, "räntekostnader för andra skulder till kreditinstitut"). Det är en separat post från själva amorteringen – amorteringen minskar lånet (syns i grafen ovan), räntan är en löpande kostnad som påverkar resultatet.
+          <p style={{ marginTop: 6 }}>
+            Ingår även <strong>upplupna räntekostnader</strong>: även när ett kvartal visar 0 i bokförd ränta (t.ex. Q2 2026) räknar dashboarden med periodens verkliga räntebelastning, eftersom obetald ränta då ligger som en upplupen kostnad i balansräkningen (konto 2960). Det är en periodiseringseffekt – inte att räntan försvann.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            Räntan har sjunkit kraftigt de senaste två åren från ~270 tkr/kvartal under 2023–2024 till ~149 tkr/kvartal under 2026, både genom amortering och lägre marknadsränta.
+          </p>
+        </Explainer>
       </Card>
     </div>
   </div>);
