@@ -187,16 +187,17 @@ function ViewToggle({ value, onChange }) {
         border: `1px solid ${value === v ? T.green : T.line}`,
       }}>{l}</button>
   );
-  return <div className="flex gap-1">{opt("q", "Kvartal")}{opt("y", "År")}</div>;
+  return <div className="flex gap-1">{opt("y", "År")}{opt("q", "Kvartal")}</div>;
 }
 
 /* ---------- Overview ---------- */
 function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear }) {
-  const [vResult, setVResult] = useState("q");
-  const [vLikv, setVLikv] = useState("q");
-  const [vLan, setVLan] = useState("q");
-  const [vDrift, setVDrift] = useState("q");
-  const [vRanta, setVRanta] = useState("q");
+  const [vResult, setVResult] = useState("y");
+  const [vLikv, setVLikv] = useState("y");
+  const [vLan, setVLan] = useState("y");
+  const [vDrift, setVDrift] = useState("y");
+  const [vRanta, setVRanta] = useState("y");
+  const [vAvgift, setVAvgift] = useState("y");
 
   // quarterly series
   const quarterly = useMemo(() => {
@@ -205,6 +206,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
       resultat: resultOf(p),
       likviditet: num(p.br.kassa_bank), lan: num(p.br.fastighetslan),
       drift: driftOf(p), ranta: num(p.rr.rantekostnader),
+      arsavgift: num(p.rr.arsavgifter),
     }));
   }, [sorted]);
 
@@ -223,6 +225,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         resultat: res, ackumulerat: running,
         likviditet: num(last.br.kassa_bank), lan: num(last.br.fastighetslan),
         drift: sum(driftOf), ranta: sum((p) => num(p.rr.rantekostnader)),
+        arsavgift: sum((p) => num(p.rr.arsavgifter)),
       };
     });
   }, [sorted]);
@@ -256,10 +259,12 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     const ytdDrift = curQs.reduce((s, p) => s + driftOf(p), 0);
     const ytdRanta = curQs.reduce((s, p) => s + adjRantaOf(p), 0);
 
+    const ytdAvgift = curQs.reduce((s, p) => s + num(p.rr.arsavgifter), 0);
+
     const arsavgQ = num(latest.rr.arsavgifter);
     const avskrQ = 144273;
     const curYearNum = curYear;
-    const ytdLabel = `${curYearNum} hittills (Q1–Q${curQs.length})`;
+    const ytdLabel = `${curYearNum} YTD`;
 
     const missingQs = [1, 2, 3, 4].filter((q) => !curQs.some((p) => p.q === q));
     let base = ytdRes, best = ytdRes, worst = ytdRes;
@@ -296,7 +301,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
       curYear,
       ytdRow: {
         label: ytdLabel, isYtd: true,
-        resultat: ytdRes, drift: ytdDrift, ranta: ytdRanta,
+        resultat: ytdRes, drift: ytdDrift, ranta: ytdRanta, arsavgift: ytdAvgift,
         likviditet: num(latest.br.kassa_bank), lan: num(latest.br.fastighetslan),
       },
       forecastRow: {
@@ -306,6 +311,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         driftErr: [driftBase - driftBest, driftWorst - driftBase],
         driftSpann: { best: driftBest, worst: driftWorst },
         ranta: rantaBase,
+        arsavgift: arsavgQ * 4,
         likviditet: num(latest.br.kassa_bank), lan: num(latest.br.fastighetslan),
       },
     };
@@ -334,6 +340,27 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     r.isForecast ? { ...r, err: r.driftErr, spann: r.driftSpann } : r
   );
   const rantaSeries = vRanta === "q" ? quarterly : buildYearSeries();
+
+  // Årsavgift i kr/m² i årstakt
+  // - Kvartal: (kvartalsavgift × 4) / boyta
+  // - Helår (komplett): årssumma / boyta
+  // - YTD: (ytd × 4 / antal kvartal) / boyta = annualiserat
+  // - Prognos: helårsprognos / boyta
+  const avgiftSeries = useMemo(() => {
+    if (!boyta) return [];
+    if (vAvgift === "q") {
+      return quarterly.map((d) => ({ ...d, avgiftKvm: (d.arsavgift * 4) / boyta }));
+    }
+    const ys = buildYearSeries();
+    return ys.map((d) => {
+      if (d.isYtd && forecastData) {
+        // ytd annualiserat
+        const nQ = sorted.filter((p) => p.year === forecastData.curYear).length;
+        return { ...d, avgiftKvm: (d.arsavgift * 4 / nQ) / boyta };
+      }
+      return { ...d, avgiftKvm: d.arsavgift / boyta };
+    });
+  }, [vAvgift, quarterly, yearly, forecastData, boyta, sorted]);
 
   const driftKvm = boyta ? (driftOf(latest) * 4) / boyta : null;
   const skuldKvm = boyta ? num(latest.br.fastighetslan) / boyta : null;
@@ -487,6 +514,36 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
           </p>
           <p style={{ marginTop: 6 }}>
             Räntan har sjunkit kraftigt de senaste två åren från ~270 tkr/kvartal under 2023–2024 till ~149 tkr/kvartal under 2026, både genom amortering och lägre marknadsränta.
+          </p>
+        </Explainer>
+      </Card>
+
+      <Card title="Årsavgift" hint={<ViewToggle value={vAvgift} onChange={setVAvgift} />}>
+        <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
+          {boyta
+            ? (vAvgift === "q"
+                ? "kvartalets avgift annualiserad och uttryckt per kvadratmeter"
+                : "helår per kvadratmeter · ljus stapel = innevarande år hittills (annualiserat), blekare = helårsprognos")
+            : "ange boyta under Data & perioder för att räkna fram kr/m²"}
+        </p>
+        <ResponsiveContainer width="100%" height={240}>
+          <ComposedChart data={avgiftSeries} margin={{ left: 4, right: 4, top: 8 }}>
+            <CartesianGrid stroke={T.line} vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(v) => kr(v)} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={70} />
+            <Tooltip content={<ChartTip />} />
+            <Bar dataKey="avgiftKvm" name="Årsavgift kr/m²" radius={[3, 3, 0, 0]}>
+              {avgiftSeries.map((d, i) => {
+                const opacity = d.isForecast ? 0.45 : d.isYtd ? 0.75 : 1;
+                return <Cell key={i} fill={T.green} fillOpacity={opacity} />;
+              })}
+            </Bar>
+          </ComposedChart>
+        </ResponsiveContainer>
+        <Explainer>
+          <strong>Årsavgift kr/m²</strong> är ett centralt nyckeltal för att jämföra BRF:er med varandra: hur mycket medlemmarna betalar per kvadratmeter och år. Måttet räknas i <em>årstakt</em>, dvs. för enskilda kvartal multipliceras kvartalsavgiften med fyra, och YTD-stapeln annualiseras (faktiskt hittills × 4/antal kvartal).
+          <p style={{ marginTop: 6 }}>
+            Hos Lillgården låg avgiften på ~756 kr/m² under 2023, höjdes till ~787 kr/m² 2024, och har sedan dess sjunkit i takt med lägre räntekostnader – till ~637 kr/m² 2025 och en prognostiserad nivå på ~547 kr/m² för 2026. För jämförelse: snittet bland svenska BRF:er ligger normalt på 500–800 kr/m², och &gt;1 000 kr/m² betraktas som högt.
           </p>
         </Explainer>
       </Card>
