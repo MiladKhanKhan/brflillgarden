@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import {
   ComposedChart, Bar, Line, LineChart, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, Cell,
+  Tooltip, Legend, ResponsiveContainer, Cell, ErrorBar,
 } from "recharts";
 import {
   Settings, LayoutGrid, TrendingUp, Scale, Save, Trash2, Plus,
@@ -142,9 +142,17 @@ function Card({ title, hint, children }) {
 }
 function ChartTip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
   return (<div style={{ background: "#fff", border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }} className="px-3 py-2 shadow-sm">
     <div style={{ fontWeight: 600, marginBottom: 4 }}>{label}</div>
-    {payload.map((p) => <div key={p.dataKey} style={{ color: p.color }}>{p.name}: {kr(p.value)}</div>)}
+    {payload.filter((p) => !Array.isArray(p.value) && p.value != null).map((p) => (
+      <div key={p.dataKey} style={{ color: p.color }}>{p.name}: {kr(p.value)}</div>
+    ))}
+    {row?.isForecast && row?.spann && (
+      <div style={{ color: T.faint, marginTop: 4 }}>
+        Spann: {kr(row.spann.worst)} – {kr(row.spann.best)}
+      </div>
+    )}
   </div>);
 }
 
@@ -170,57 +178,111 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
   const [vDrift, setVDrift] = useState("q");
   const [vRanta, setVRanta] = useState("q");
 
-  // quarterly series with running accumulated result per year
+  // quarterly series
   const quarterly = useMemo(() => {
-    const byYearRunning = {};
-    return sorted.map((p) => {
-      const r = resultOf(p);
-      byYearRunning[p.year] = (byYearRunning[p.year] || 0) + r;
-      return {
-        label: p.label, year: p.year, q: p.q,
-        resultat: r, ackumulerat: byYearRunning[p.year],
-        likviditet: num(p.br.kassa_bank), lan: num(p.br.fastighetslan),
-        soliditet: soliditetOf(p) != null ? soliditetOf(p) * 100 : null,
-        drift: driftOf(p), ranta: num(p.rr.rantekostnader),
-      };
-    });
+    return sorted.map((p) => ({
+      label: p.label, year: p.year, q: p.q,
+      resultat: resultOf(p),
+      likviditet: num(p.br.kassa_bank), lan: num(p.br.fastighetslan),
+      drift: driftOf(p), ranta: num(p.rr.rantekostnader),
+    }));
   }, [sorted]);
 
-  // yearly aggregated series (sum flows, last-quarter snapshot for balances)
+  // yearly aggregated series with accumulated (running total across years)
   const yearly = useMemo(() => {
     const years = [...new Set(sorted.map((p) => p.year))];
+    let running = 0;
     return years.map((y) => {
       const qs = sorted.filter((p) => p.year === y);
       const last = qs[qs.length - 1];
       const sum = (fn) => qs.reduce((s, p) => s + fn(p), 0);
+      const res = sum(resultOf);
+      running += res;
       return {
         label: String(y), year: y, nQ: qs.length,
-        resultat: sum(resultOf), ackumulerat: sum(resultOf),
+        resultat: res, ackumulerat: running,
         likviditet: num(last.br.kassa_bank), lan: num(last.br.fastighetslan),
-        soliditet: soliditetOf(last) != null ? soliditetOf(last) * 100 : null,
         drift: sum(driftOf), ranta: sum((p) => num(p.rr.rantekostnader)),
       };
     });
   }, [sorted]);
 
-  // forecast for the current (incomplete) year, based on YTD run-rate
+  /* ---- Resultatprognos, metod 2: säsongsmall + kända justeringar + osäkerhetsspann ----
+     För varje kvartal som saknas i innevarande år:
+     1. Utgå från samma kvartal föregående år (säsongsmall).
+     2. Justera kända poster: årsavgift = årets faktiska nivå, räntekostnad = årets
+        verkliga kvartalsränta, avskrivningar = känd nivå.
+     3. Osäkerhetsspann: variera driftskostnaderna mellan historiskt min och max
+        för samma kvartal (fångar el- och underhållsvariation). */
   const forecast = useMemo(() => {
+    const curYear = latest.year;
+    const curQs = sorted.filter((p) => p.year === curYear);
+    if (curQs.length >= 4) return null; // året komplett, ingen prognos behövs
+
+    const ytd = curQs.reduce((s, p) => s + resultOf(p), 0);
+
+    // kända justeringar
+    const arsavgQ = num(latest.rr.arsavgifter); // årets avgiftsnivå per kvartal
+    const avskrQ = 144273; // deterministisk
+    // verklig kvartalsränta: senaste nollskilda i år, annars snitt föreg. år
+    const rantaVals = curQs.map((p) => num(p.rr.rantekostnader)).filter((v) => v > 0);
+    const prevYearQs = sorted.filter((p) => p.year === curYear - 1);
+    const rantaQ = rantaVals.length
+      ? rantaVals[rantaVals.length - 1]
+      : prevYearQs.reduce((s, p) => s + num(p.rr.rantekostnader), 0) / (prevYearQs.length || 1);
+
+    const missingQs = [1, 2, 3, 4].filter((q) => !curQs.some((p) => p.q === q));
+    let base = ytd, best = ytd, worst = ytd;
+    for (const q of missingQs) {
+      const candidates = sorted.filter((p) => p.q === q && p.year < curYear);
+      if (!candidates.length) {
+        // fallback: linjär run-rate för detta kvartal
+        const rate = ytd / curQs.length;
+        base += rate; best += rate; worst += rate;
+        continue;
+      }
+      const tmpl = candidates[candidates.length - 1]; // senaste året med detta kvartal
+      const adjRR = { ...tmpl.rr, arsavgifter: arsavgQ, rantekostnader: rantaQ, avskrivningar: avskrQ };
+      const adjResult = RR.reduce((s, a) => s + (a.s === "in" ? num(adjRR[a.k]) : -num(adjRR[a.k])), 0);
+      const tmplDrift = DRIFT.reduce((s, k) => s + num(adjRR[k]), 0);
+      const drifts = candidates.map(driftOf);
+      const minDrift = Math.min(...drifts), maxDrift = Math.max(...drifts);
+      base += adjResult;
+      best += adjResult + (tmplDrift - minDrift);   // lägre drift -> bättre resultat
+      worst += adjResult - (maxDrift - tmplDrift);  // högre drift -> sämre resultat
+    }
+
+    const prevAccum = yearly.length ? yearly[yearly.length - 1].ackumulerat : 0;
+    return {
+      label: `${curYear} prognos`, year: curYear, isForecast: true,
+      resultat: base, err: [base - worst, best - base],
+      ackumulerat: prevAccum - (yearly.length ? yearly[yearly.length - 1].resultat : 0) + base,
+      likviditet: null, lan: null,
+      drift: null, ranta: null,
+      spann: { best, worst },
+    };
+  }, [sorted, yearly, latest]);
+
+  // enkel linjär prognos för drift & ränta i årsvyn (jämna poster över året)
+  const linForecast = useMemo(() => {
     const cur = yearly[yearly.length - 1];
     if (!cur || cur.nQ >= 4) return null;
-    const factor = 4 / cur.nQ;
-    return {
-      label: `${cur.year} (prognos)`, year: cur.year, isForecast: true,
-      resultat: cur.resultat * factor, ackumulerat: cur.resultat * factor,
-      likviditet: cur.likviditet, lan: cur.lan, soliditet: cur.soliditet,
-      drift: cur.drift * factor, ranta: cur.ranta * factor,
-    };
+    const f = 4 / cur.nQ;
+    return { drift: cur.drift * f, ranta: cur.ranta * f, label: `${cur.year} prognos`, isForecast: true };
   }, [yearly]);
 
-  const resultSeries = vResult === "q" ? quarterly : (forecast ? [...yearly, forecast] : yearly);
+  // i årsvyn: ersätt innevarande (ofullständigt) år med prognosen i resultatgrafen
+  const resultSeries = vResult === "q"
+    ? quarterly
+    : forecast
+      ? [...yearly.slice(0, -1).map(y => ({ ...y })), { ...forecast }]
+      : yearly;
   const likvSeries = vLikv === "q" ? quarterly : yearly;
   const lanSeries = vLan === "q" ? quarterly : yearly;
-  const driftSeries = vDrift === "q" ? quarterly : yearly;
-  const rantaSeries = vRanta === "q" ? quarterly : yearly;
+  const driftSeries = vDrift === "q" ? quarterly
+    : linForecast ? [...yearly.slice(0, -1), { ...yearly[yearly.length - 1], label: linForecast.label, drift: linForecast.drift, isForecast: true }] : yearly;
+  const rantaSeries = vRanta === "q" ? quarterly
+    : linForecast ? [...yearly.slice(0, -1), { ...yearly[yearly.length - 1], label: linForecast.label, ranta: linForecast.ranta, isForecast: true }] : yearly;
 
   const driftKvm = boyta ? (driftOf(latest) * 4) / boyta : null;
   const skuldKvm = boyta ? num(latest.br.fastighetslan) / boyta : null;
@@ -244,7 +306,9 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     <div className="grid lg:grid-cols-2 gap-5">
       <Card title="Resultat" hint={<ViewToggle value={vResult} onChange={setVResult} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
-          {vResult === "q" ? "staplar = period · linje = ackumulerat resultat för året" : "staplar = helårsresultat · streckad stapel = prognos baserad på hittills i år"}
+          {vResult === "q"
+            ? "resultat per kvartal · grön = överskott, röd = underskott"
+            : "helårsresultat · linje = ackumulerat över åren · felstapel = osäkerhetsspann för prognosen"}
         </p>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={resultSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -256,22 +320,22 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
             <Bar dataKey="resultat" name={vResult === "q" ? "Resultat" : "Helårsresultat"} radius={[3, 3, 0, 0]}>
               {resultSeries.map((d, i) => <Cell key={i} fill={d.isForecast ? T.faint : d.resultat >= 0 ? T.green : T.clay}
                 fillOpacity={d.isForecast ? 0.5 : 1} />)}
+              {vResult === "y" && <ErrorBar dataKey="err" width={8} strokeWidth={2} stroke={T.ink} />}
             </Bar>
-            {vResult === "q" && <Line dataKey="ackumulerat" name="Ackumulerat (året)" stroke={T.ink} strokeWidth={2} dot={{ r: 3 }} />}
+            {vResult === "y" && <Line dataKey="ackumulerat" name="Ackumulerat" stroke={T.ink} strokeWidth={2} dot={{ r: 3 }} />}
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
 
-      <Card title="Likviditet & soliditet" hint={<ViewToggle value={vLikv} onChange={setVLikv} />}>
+      <Card title="Likviditet" hint={<ViewToggle value={vLikv} onChange={setVLikv} />}>
+        <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>kassa & bank, utgående saldo per period</p>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={likvSeries} margin={{ left: 4, right: 4, top: 8 }}>
             <CartesianGrid stroke={T.line} vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
-            <YAxis yAxisId="l" tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
-            <YAxis yAxisId="r" orientation="right" tickFormatter={(v) => v + " %"} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={44} domain={[0, 100]} />
-            <Tooltip content={<ChartTip />} /><Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar yAxisId="l" dataKey="likviditet" name="Likviditet" fill={T.blue} radius={[3, 3, 0, 0]} />
-            <Line yAxisId="r" dataKey="soliditet" name="Soliditet (%)" stroke={T.green} strokeWidth={2} dot={{ r: 3 }} />
+            <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
+            <Tooltip content={<ChartTip />} />
+            <Bar dataKey="likviditet" name="Likviditet" fill={T.blue} radius={[3, 3, 0, 0]} />
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
