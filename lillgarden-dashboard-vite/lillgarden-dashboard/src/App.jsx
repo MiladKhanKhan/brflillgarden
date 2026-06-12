@@ -148,12 +148,80 @@ function ChartTip({ active, payload, label }) {
   </div>);
 }
 
+/* ---------- period/year toggle ---------- */
+function ViewToggle({ value, onChange }) {
+  const opt = (v, l) => (
+    <button onClick={() => onChange(v)}
+      style={{
+        fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 6,
+        background: value === v ? T.green : "transparent",
+        color: value === v ? "#fff" : T.faint,
+        border: `1px solid ${value === v ? T.green : T.line}`,
+      }}>{l}</button>
+  );
+  return <div className="flex gap-1">{opt("q", "Kvartal")}{opt("y", "År")}</div>;
+}
+
 /* ---------- Overview ---------- */
 function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear }) {
-  const series = sorted.map((p) => ({
-    label: p.label, resultat: resultOf(p), likviditet: num(p.br.kassa_bank),
-    lan: num(p.br.fastighetslan), drift: driftOf(p), ranta: num(p.rr.rantekostnader),
-  }));
+  const [vResult, setVResult] = useState("q");
+  const [vLikv, setVLikv] = useState("q");
+  const [vLan, setVLan] = useState("q");
+  const [vDrift, setVDrift] = useState("q");
+  const [vRanta, setVRanta] = useState("q");
+
+  // quarterly series with running accumulated result per year
+  const quarterly = useMemo(() => {
+    const byYearRunning = {};
+    return sorted.map((p) => {
+      const r = resultOf(p);
+      byYearRunning[p.year] = (byYearRunning[p.year] || 0) + r;
+      return {
+        label: p.label, year: p.year, q: p.q,
+        resultat: r, ackumulerat: byYearRunning[p.year],
+        likviditet: num(p.br.kassa_bank), lan: num(p.br.fastighetslan),
+        soliditet: soliditetOf(p) != null ? soliditetOf(p) * 100 : null,
+        drift: driftOf(p), ranta: num(p.rr.rantekostnader),
+      };
+    });
+  }, [sorted]);
+
+  // yearly aggregated series (sum flows, last-quarter snapshot for balances)
+  const yearly = useMemo(() => {
+    const years = [...new Set(sorted.map((p) => p.year))];
+    return years.map((y) => {
+      const qs = sorted.filter((p) => p.year === y);
+      const last = qs[qs.length - 1];
+      const sum = (fn) => qs.reduce((s, p) => s + fn(p), 0);
+      return {
+        label: String(y), year: y, nQ: qs.length,
+        resultat: sum(resultOf), ackumulerat: sum(resultOf),
+        likviditet: num(last.br.kassa_bank), lan: num(last.br.fastighetslan),
+        soliditet: soliditetOf(last) != null ? soliditetOf(last) * 100 : null,
+        drift: sum(driftOf), ranta: sum((p) => num(p.rr.rantekostnader)),
+      };
+    });
+  }, [sorted]);
+
+  // forecast for the current (incomplete) year, based on YTD run-rate
+  const forecast = useMemo(() => {
+    const cur = yearly[yearly.length - 1];
+    if (!cur || cur.nQ >= 4) return null;
+    const factor = 4 / cur.nQ;
+    return {
+      label: `${cur.year} (prognos)`, year: cur.year, isForecast: true,
+      resultat: cur.resultat * factor, ackumulerat: cur.resultat * factor,
+      likviditet: cur.likviditet, lan: cur.lan, soliditet: cur.soliditet,
+      drift: cur.drift * factor, ranta: cur.ranta * factor,
+    };
+  }, [yearly]);
+
+  const resultSeries = vResult === "q" ? quarterly : (forecast ? [...yearly, forecast] : yearly);
+  const likvSeries = vLikv === "q" ? quarterly : yearly;
+  const lanSeries = vLan === "q" ? quarterly : yearly;
+  const driftSeries = vDrift === "q" ? quarterly : yearly;
+  const rantaSeries = vRanta === "q" ? quarterly : yearly;
+
   const driftKvm = boyta ? (driftOf(latest) * 4) / boyta : null;
   const skuldKvm = boyta ? num(latest.br.fastighetslan) / boyta : null;
   const avgiftKvm = boyta ? (num(latest.rr.arsavgifter) * 4) / boyta : null;
@@ -174,54 +242,83 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     )}
 
     <div className="grid lg:grid-cols-2 gap-5">
-      <Card title="Resultat per kvartal" hint="grön = överskott · röd = underskott">
+      <Card title="Resultat" hint={<ViewToggle value={vResult} onChange={setVResult} />}>
+        <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
+          {vResult === "q" ? "staplar = period · linje = ackumulerat resultat för året" : "staplar = helårsresultat · streckad stapel = prognos baserad på hittills i år"}
+        </p>
         <ResponsiveContainer width="100%" height={260}>
-          <ComposedChart data={series} margin={{ left: 4, right: 4, top: 8 }}>
+          <ComposedChart data={resultSeries} margin={{ left: 4, right: 4, top: 8 }}>
             <CartesianGrid stroke={T.line} vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
             <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
             <Tooltip content={<ChartTip />} />
-            <Bar dataKey="resultat" name="Resultat" radius={[3, 3, 0, 0]}>
-              {series.map((d, i) => <Cell key={i} fill={d.resultat >= 0 ? T.green : T.clay} />)}
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar dataKey="resultat" name={vResult === "q" ? "Resultat" : "Helårsresultat"} radius={[3, 3, 0, 0]}>
+              {resultSeries.map((d, i) => <Cell key={i} fill={d.isForecast ? T.faint : d.resultat >= 0 ? T.green : T.clay}
+                fillOpacity={d.isForecast ? 0.5 : 1} />)}
+            </Bar>
+            {vResult === "q" && <Line dataKey="ackumulerat" name="Ackumulerat (året)" stroke={T.ink} strokeWidth={2} dot={{ r: 3 }} />}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <Card title="Likviditet & soliditet" hint={<ViewToggle value={vLikv} onChange={setVLikv} />}>
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={likvSeries} margin={{ left: 4, right: 4, top: 8 }}>
+            <CartesianGrid stroke={T.line} vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
+            <YAxis yAxisId="l" tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
+            <YAxis yAxisId="r" orientation="right" tickFormatter={(v) => v + " %"} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={44} domain={[0, 100]} />
+            <Tooltip content={<ChartTip />} /><Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar yAxisId="l" dataKey="likviditet" name="Likviditet" fill={T.blue} radius={[3, 3, 0, 0]} />
+            <Line yAxisId="r" dataKey="soliditet" name="Soliditet (%)" stroke={T.green} strokeWidth={2} dot={{ r: 3 }} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <Card title="Fastighetslån" hint={<ViewToggle value={vLan} onChange={setVLan} />}>
+        <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>utgående skuld per period</p>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={lanSeries} margin={{ left: 4, right: 4, top: 8 }}>
+            <CartesianGrid stroke={T.line} vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} domain={["auto", "auto"]} />
+            <Tooltip content={<ChartTip />} />
+            <Line dataKey="lan" name="Fastighetslån" stroke={T.gold} strokeWidth={2} dot={{ r: 3 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <Card title="Driftskostnader" hint={<ViewToggle value={vDrift} onChange={setVDrift} />}>
+        <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
+          {vDrift === "q" ? "säsongsvariation per kvartal" : "totalt per år (streckad = prognos)"}
+        </p>
+        <ResponsiveContainer width="100%" height={240}>
+          <ComposedChart data={driftSeries} margin={{ left: 4, right: 4, top: 8 }}>
+            <CartesianGrid stroke={T.line} vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
+            <Tooltip content={<ChartTip />} />
+            <Bar dataKey="drift" name="Driftskostnader" radius={[3, 3, 0, 0]}>
+              {driftSeries.map((d, i) => <Cell key={i} fill={T.blue} fillOpacity={d.isForecast ? 0.5 : 1} />)}
             </Bar>
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
 
-      <Card title="Likviditet & fastighetslån" hint="över tid">
-        <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={series} margin={{ left: 4, right: 4, top: 8 }}>
-            <CartesianGrid stroke={T.line} vertical={false} />
-            <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
-            <YAxis yAxisId="l" tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
-            <YAxis yAxisId="r" orientation="right" tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
-            <Tooltip content={<ChartTip />} /><Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line yAxisId="l" dataKey="likviditet" name="Likviditet" stroke={T.blue} strokeWidth={2} dot={{ r: 3 }} />
-            <Line yAxisId="r" dataKey="lan" name="Fastighetslån" stroke={T.gold} strokeWidth={2} dot={{ r: 3 }} />
-          </LineChart>
-        </ResponsiveContainer>
-      </Card>
-
-      <Card title="Driftskostnader per kvartal" hint="säsongsvariation">
+      <Card title="Räntekostnad" hint={<ViewToggle value={vRanta} onChange={setVRanta} />}>
+        <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
+          {vRanta === "q" ? "lägre är bättre" : "totalt per år (streckad = prognos)"}
+        </p>
         <ResponsiveContainer width="100%" height={240}>
-          <ComposedChart data={series} margin={{ left: 4, right: 4, top: 8 }}>
+          <ComposedChart data={rantaSeries} margin={{ left: 4, right: 4, top: 8 }}>
             <CartesianGrid stroke={T.line} vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
             <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
             <Tooltip content={<ChartTip />} />
-            <Bar dataKey="drift" name="Driftskostnader" radius={[3, 3, 0, 0]} fill={T.blue} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </Card>
-
-      <Card title="Räntekostnad per kvartal" hint="lägre är bättre">
-        <ResponsiveContainer width="100%" height={240}>
-          <ComposedChart data={series} margin={{ left: 4, right: 4, top: 8 }}>
-            <CartesianGrid stroke={T.line} vertical={false} />
-            <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={krShort} tick={{ fontSize: 11, fill: T.faint }} axisLine={false} tickLine={false} width={52} />
-            <Tooltip content={<ChartTip />} />
-            <Bar dataKey="ranta" name="Räntekostnad" radius={[3, 3, 0, 0]} fill={T.gold} />
+            <Bar dataKey="ranta" name="Räntekostnad" radius={[3, 3, 0, 0]}>
+              {rantaSeries.map((d, i) => <Cell key={i} fill={T.gold} fillOpacity={d.isForecast ? 0.5 : 1} />)}
+            </Bar>
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
