@@ -1,10 +1,10 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   ComposedChart, Bar, Line, LineChart, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, Cell, ErrorBar,
 } from "recharts";
 import {
-  Settings, LayoutGrid, TrendingUp, Scale, Save, Trash2, Plus, Lightbulb,
+  Settings, LayoutGrid, TrendingUp, Scale, Save, Trash2, Plus, Lightbulb, ChevronRight,
 } from "lucide-react";
 import { RR, BR, DRIFT, SEED_PERIODS, DEFAULT_SETTINGS } from "./data.js";
 import { useLocalStorage } from "./useLocalStorage.js";
@@ -33,6 +33,7 @@ const num = (v) => { const x = parseFloat(String(v).replace(/\s/g, "").replace("
 /* ============================================================ */
 function Dashboard() {
   const [tab, setTab] = useState("oversikt");
+  const [focusChart, setFocusChart] = useState(null);
   const [settings, setSettings] = useLocalStorage("brf_lillgarden_settings", DEFAULT_SETTINGS);
   const [periods, setPeriods] = useLocalStorage("brf_lillgarden_periods", SEED_PERIODS);
 
@@ -44,6 +45,26 @@ function Dashboard() {
   const driftOf = (p) => DRIFT.reduce((s, k) => s + num(p.rr[k]), 0);
   const assetsOf = (p) => num(p.br.byggnader_mark) + num(p.br.fordringar) + num(p.br.kassa_bank);
   const soliditetOf = (p) => (assetsOf(p) ? num(p.br.eget_kapital) / assetsOf(p) : null);
+
+  // Klick på KPI-bricka: byt till rätt flik och scrolla till grafen
+  const goToChart = (chartTab, anchorId) => {
+    setTab(chartTab);
+    setFocusChart(anchorId);
+  };
+  useEffect(() => {
+    if (!focusChart) return;
+    const t = setTimeout(() => {
+      const el = document.getElementById(focusChart);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.style.transition = "box-shadow .3s";
+        el.style.boxShadow = `0 0 0 2px ${T.green}`;
+        setTimeout(() => { el.style.boxShadow = "none"; }, 1400);
+      }
+      setFocusChart(null);
+    }, 80);
+    return () => clearTimeout(t);
+  }, [focusChart, tab]);
 
   if (!latest) {
     return (
@@ -93,9 +114,9 @@ function Dashboard() {
 
       <main className="max-w-6xl mx-auto px-5 py-6">
         {tab === "oversikt" && (
-          <Overview {...{ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear }} />
+          <Overview {...{ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear, goToChart }} />
         )}
-        {tab === "insikter" && <Insikter {...{ sorted, latest, boyta, resultOf, driftOf, soliditetOf }} />}
+        {tab === "insikter" && <Insikter {...{ sorted, latest, boyta, resultOf, driftOf, soliditetOf, focusChart }} />}
         {tab === "rr" && <RRTable {...{ sorted, resultOf, driftOf, boyta }} />}
         {tab === "br" && <BRTable {...{ sorted, assetsOf, soliditetOf, boyta }} />}
         {tab === "data" && <DataTab {...{ sorted, settings, setSettings, periods, setPeriods }} />}
@@ -125,16 +146,28 @@ function Meta({ label, value }) {
     <div style={{ fontSize: 15, fontWeight: 600 }}>{value}</div>
   </div>);
 }
-function KpiTile({ label, value, sub, accent, sign }) {
+function KpiTile({ label, value, sub, accent, sign, onClick }) {
   const c = sign === undefined ? T.ink : sign >= 0 ? T.green : T.clay;
-  return (<div style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 12, borderLeft: `3px solid ${accent}` }} className="px-4 py-3">
-    <div style={{ color: T.faint, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
+  const [hover, setHover] = useState(false);
+  return (<div onClick={onClick}
+    onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+    style={{
+      background: T.surface, border: `1px solid ${hover && onClick ? accent : T.line}`,
+      borderRadius: 12, borderLeft: `3px solid ${accent}`,
+      cursor: onClick ? "pointer" : "default",
+      transition: "border-color .12s, transform .12s",
+      transform: hover && onClick ? "translateY(-1px)" : "none",
+    }} className="px-4 py-3">
+    <div className="flex items-center justify-between">
+      <div style={{ color: T.faint, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
+      {onClick && <ChevronRight size={13} style={{ color: hover ? accent : T.line }} />}
+    </div>
     <div style={{ fontSize: 21, fontWeight: 700, color: c, marginTop: 4 }}>{value}</div>
     {sub && <div style={{ color: T.inkSoft, fontSize: 12, marginTop: 2 }}>{sub}</div>}
   </div>);
 }
-function Card({ title, hint, children }) {
-  return (<div style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14 }} className="p-4">
+function Card({ title, hint, children, id }) {
+  return (<div id={id} style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14 }} className="p-4">
     <div className="flex items-baseline justify-between mb-3 gap-3">
       <h3 style={{ fontSize: 14, fontWeight: 600 }}>{title}</h3>
       {hint && <span style={{ color: T.faint, fontSize: 11 }}>{hint}</span>}
@@ -192,7 +225,7 @@ function ViewToggle({ value, onChange }) {
 }
 
 /* ---------- Overview ---------- */
-function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear }) {
+function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear, goToChart }) {
   const [vResult, setVResult] = useState("y");
   const [vLikv, setVLikv] = useState("y");
   const [vLan, setVLan] = useState("y");
@@ -375,12 +408,12 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
 
   return (<div className="space-y-5">
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-      <KpiTile label={`Resultat ${latest.label}`} value={krShort(resultOf(latest))} accent={resultOf(latest) >= 0 ? T.green : T.clay} sign={resultOf(latest)} />
-      <KpiTile label={`Resultat ${latest.year} (ack.)`} value={krShort(ackYear)} accent={ackYear >= 0 ? T.green : T.clay} sign={ackYear} />
-      <KpiTile label="Likviditet (kassa)" value={krShort(num(latest.br.kassa_bank))} accent={T.blue} />
-      <KpiTile label="Fastighetslån" value={krShort(num(latest.br.fastighetslan))} accent={T.gold} />
-      <KpiTile label="Skuld / m²" value={skuldKvm != null ? kr(skuldKvm) : "ange boyta"} sub="fastighetslån" accent={T.gold} />
-      <KpiTile label="Soliditet" value={pct(soliditetOf(latest))} accent={T.green} />
+      <KpiTile label={`Resultat ${latest.label}`} value={krShort(resultOf(latest))} accent={resultOf(latest) >= 0 ? T.green : T.clay} sign={resultOf(latest)} onClick={() => goToChart("oversikt", "chart-resultat")} />
+      <KpiTile label={`Resultat ${latest.year} (ack.)`} value={krShort(ackYear)} accent={ackYear >= 0 ? T.green : T.clay} sign={ackYear} onClick={() => goToChart("oversikt", "chart-resultat")} />
+      <KpiTile label="Likviditet (kassa)" value={krShort(num(latest.br.kassa_bank))} accent={T.blue} onClick={() => goToChart("oversikt", "chart-likviditet")} />
+      <KpiTile label="Fastighetslån" value={krShort(num(latest.br.fastighetslan))} accent={T.gold} onClick={() => goToChart("oversikt", "chart-lan")} />
+      <KpiTile label="Skuld / m²" value={skuldKvm != null ? kr(skuldKvm) : "ange boyta"} sub="se skala →" accent={T.gold} onClick={() => goToChart("insikter", "chart-skuldkvm")} />
+      <KpiTile label="Soliditet" value={pct(soliditetOf(latest))} accent={T.green} onClick={() => goToChart("insikter", "chart-skuldkvm")} />
     </div>
     {driftKvm != null && (
       <div style={{ background: T.greenSoft, border: `1px solid ${T.line}`, borderRadius: 10, color: T.ink, fontSize: 13 }} className="px-4 py-2">
@@ -389,7 +422,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     )}
 
     <div className="grid lg:grid-cols-2 gap-5">
-      <Card title="Resultat" hint={<ViewToggle value={vResult} onChange={setVResult} />}>
+      <Card id="chart-resultat" title="Resultat" hint={<ViewToggle value={vResult} onChange={setVResult} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
           {vResult === "q"
             ? "resultat per kvartal · grön = överskott, röd = underskott"
@@ -426,7 +459,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         </Explainer>
       </Card>
 
-      <Card title="Likviditet" hint={<ViewToggle value={vLikv} onChange={setVLikv} />}>
+      <Card id="chart-likviditet" title="Likviditet" hint={<ViewToggle value={vLikv} onChange={setVLikv} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>kassa & bank, utgående saldo per period</p>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={likvSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -442,7 +475,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         </Explainer>
       </Card>
 
-      <Card title="Fastighetslån" hint={<ViewToggle value={vLan} onChange={setVLan} />}>
+      <Card id="chart-lan" title="Fastighetslån" hint={<ViewToggle value={vLan} onChange={setVLan} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>utgående skuld per period</p>
         <ResponsiveContainer width="100%" height={240}>
           <LineChart data={lanSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -558,8 +591,59 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
   </div>);
 }
 
-/* ---------- Insikter: avvikelser + rekommendationer ---------- */
-function Insikter({ sorted, latest, boyta, resultOf, driftOf, soliditetOf }) {
+/* ---------- Skuld/m² skala (gauge) ---------- */
+function SkuldGauge({ value, boyta, lan }) {
+  // Zoner enligt branschtumregler (kr/m² totalyta)
+  const max = 18000;
+  const zones = [
+    { to: 5000, color: "#2E6F5E", label: "Låg / bra" },
+    { to: 10000, color: "#B8893B", label: "Måttlig" },
+    { to: 15000, color: "#C9762F", label: "Hög" },
+    { to: max, color: "#B4533C", label: "Riskfylld" },
+  ];
+  const W = 700, H = 96, pad = 16, barY = 46, barH = 26;
+  const x = (v) => pad + (Math.min(v, max) / max) * (W - 2 * pad);
+  const markerX = x(value);
+  const curZone = zones.find((z) => value <= z.to) || zones[zones.length - 1];
+
+  return (
+    <div>
+      <div className="overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 520 }}>
+          {/* zonsegment */}
+          {zones.map((z, i) => {
+            const from = i === 0 ? 0 : zones[i - 1].to;
+            return (
+              <g key={i}>
+                <rect x={x(from)} y={barY} width={x(z.to) - x(from)} height={barH} fill={z.color} fillOpacity={0.85}
+                  rx={i === 0 ? 5 : 0} />
+                <text x={(x(from) + x(z.to)) / 2} y={barY + barH + 15} textAnchor="middle"
+                  fontSize="10.5" fill={T.inkSoft} fontWeight="600">{z.label}</text>
+                <text x={x(z.to)} y={barY - 6} textAnchor="middle" fontSize="9.5" fill={T.faint}>
+                  {Math.round(z.to / 1000)}k
+                </text>
+              </g>
+            );
+          })}
+          {/* nuvarande värde-markör */}
+          <g transform={`translate(${markerX},0)`}>
+            <line x1="0" y1={barY - 4} x2="0" y2={barY + barH + 4} stroke={T.ink} strokeWidth="2.5" />
+            <polygon points="0,38 -6,28 6,28" fill={T.ink} />
+            <rect x="-42" y="6" width="84" height="20" rx="5" fill={T.ink} />
+            <text x="0" y="20" textAnchor="middle" fontSize="11" fontWeight="700" fill="#fff">{kr(value)}</text>
+          </g>
+        </svg>
+      </div>
+      <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }}>
+        Lillgården ligger på <strong style={{ color: curZone.color }}>{kr(value)}/m²</strong> ({curZone.label.toLowerCase()}) –
+        {" "}{kr(lan)} i fastighetslån fördelat på {boyta.toLocaleString("sv-SE")} m².
+      </div>
+    </div>
+  );
+}
+
+
+function Insikter({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, focusChart }) {
   const prior = sorted.slice(0, -1);
   const sameQ = prior.filter((p) => p.q === latest.q);
   const prevQ = sorted[sorted.length - 2];
@@ -680,6 +764,28 @@ function Insikter({ sorted, latest, boyta, resultOf, driftOf, soliditetOf }) {
   };
 
   return (<div className="space-y-5">
+    {boyta > 0 && (
+      <Card id="chart-skuldkvm" title="Skuldsättning per m² – var ni ligger"
+        hint="branschtumregler för totalyta">
+        <SkuldGauge value={lan / boyta} boyta={boyta} lan={lan} />
+        <div style={{ marginTop: 14, borderTop: `1px solid ${T.line}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 12, color: T.faint, fontWeight: 600, marginBottom: 6, letterSpacing: "0.05em" }}>UTVECKLING ÖVER TID</div>
+          <ResponsiveContainer width="100%" height={170}>
+            <LineChart data={sorted.map((p) => ({ label: p.label, skuldKvm: num(p.br.fastighetslan) / boyta }))}
+              margin={{ left: 4, right: 8, top: 8, bottom: 4 }}>
+              <CartesianGrid stroke={T.line} vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 10, fill: T.faint }} axisLine={false} tickLine={false} interval={1} />
+              <YAxis tickFormatter={krShort} tick={{ fontSize: 10, fill: T.faint }} axisLine={false} tickLine={false} width={48} domain={["auto", "auto"]} />
+              <Tooltip content={<ChartTip />} />
+              <Line dataKey="skuldKvm" name="Skuld/m²" stroke={T.gold} strokeWidth={2} dot={{ r: 2 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <Explainer>
+          <strong>Skuld per m²</strong> (lån delat på totalyta) är det viktigaste jämförelsemåttet mellan BRF:er och blev obligatoriskt i årsredovisningen från 2023. Vedertagna tumregler: under 5 000 kr/m² = låg/bra, 5 000–10 000 = måttlig, 10 000–15 000 = hög, över 15 000 = riskfylld. En hög siffra är inte automatiskt dålig – den måste vägas mot fastighetens skick och kommande underhåll. En nybildad förening eller en som nyss bytt stammar/tak/fönster kan motivera högre belåning. Lillgården amorterar aktivt (~250 tkr/år), så talet sjunker stadigt över tid.
+        </Explainer>
+      </Card>
+    )}
     <Card title={`Avvikelser i resultaträkningen – ${latest.label}`}
       hint={sameQ.length ? `jämfört med samma kvartal tidigare år` : `jämfört med tidigare kvartal`}>
       {flagged.length === 0 ? (
