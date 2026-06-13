@@ -4,7 +4,7 @@ import {
   Tooltip, Legend, ResponsiveContainer, Cell, ErrorBar,
 } from "recharts";
 import {
-  Settings, LayoutGrid, TrendingUp, Scale, Save, Trash2, Plus,
+  Settings, LayoutGrid, TrendingUp, Scale, Save, Trash2, Plus, Lightbulb,
 } from "lucide-react";
 import { RR, BR, DRIFT, SEED_PERIODS, DEFAULT_SETTINGS } from "./data.js";
 import { useLocalStorage } from "./useLocalStorage.js";
@@ -79,7 +79,7 @@ function Dashboard() {
         </div>
         <div className="max-w-6xl mx-auto px-5">
           <div className="flex gap-1 overflow-x-auto">
-            {[["oversikt", "Översikt", LayoutGrid], ["rr", "Resultaträkning", TrendingUp],
+            {[["oversikt", "Översikt", LayoutGrid], ["insikter", "Insikter", Lightbulb], ["rr", "Resultaträkning", TrendingUp],
               ["br", "Balansräkning", Scale], ["data", "Data & perioder", Settings]].map(([id, lbl, Icon]) => (
               <button key={id} onClick={() => setTab(id)} className="flex items-center gap-2 px-4 py-3 whitespace-nowrap"
                 style={{ fontSize: 14, fontWeight: 600, color: tab === id ? T.ink : T.faint,
@@ -95,6 +95,7 @@ function Dashboard() {
         {tab === "oversikt" && (
           <Overview {...{ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYear }} />
         )}
+        {tab === "insikter" && <Insikter {...{ sorted, latest, boyta, resultOf, driftOf, soliditetOf }} />}
         {tab === "rr" && <RRTable {...{ sorted, resultOf, driftOf, boyta }} />}
         {tab === "br" && <BRTable {...{ sorted, assetsOf, soliditetOf, boyta }} />}
         {tab === "data" && <DataTab {...{ sorted, settings, setSettings, periods, setPeriods }} />}
@@ -264,7 +265,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     const arsavgQ = num(latest.rr.arsavgifter);
     const avskrQ = 144273;
     const curYearNum = curYear;
-    const ytdLabel = `${curYearNum} YTD`;
+    const ytdLabel = `${curYearNum}`;
 
     const missingQs = [1, 2, 3, 4].filter((q) => !curQs.some((p) => p.q === q));
     let base = ytdRes, best = ytdRes, worst = ytdRes;
@@ -305,7 +306,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         likviditet: num(latest.br.kassa_bank), lan: num(latest.br.fastighetslan),
       },
       forecastRow: {
-        label: `${curYear} prognos`, isForecast: true,
+        label: "Prognos", isForecast: true,
         resultat: base, err: [base - worst, best - base], spann: { best, worst },
         drift: driftBase,
         driftErr: [driftBase - driftBest, driftWorst - driftBase],
@@ -333,28 +334,34 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
     ];
   };
 
+  // utan prognos-stapel: tidigare år + innevarande år (senaste utfall)
+  const buildYearSeriesNoForecast = () => {
+    if (!forecastData) return yearly;
+    const completed = yearly.slice(0, -1);
+    const ytd = forecastData.ytdRow;
+    return [...completed, { ...ytd, ackumulerat: null }];
+  };
+
   const resultSeries = vResult === "q" ? quarterly : buildYearSeries();
   const likvSeries = vLikv === "q" ? quarterly : yearly;
   const lanSeries = vLan === "q" ? quarterly : yearly;
   const driftSeries = vDrift === "q" ? quarterly : buildYearSeries().map(r =>
     r.isForecast ? { ...r, err: r.driftErr, spann: r.driftSpann } : r
   );
-  const rantaSeries = vRanta === "q" ? quarterly : buildYearSeries();
+  const rantaSeries = vRanta === "q" ? quarterly : buildYearSeriesNoForecast();
 
   // Årsavgift i kr/m² i årstakt
   // - Kvartal: (kvartalsavgift × 4) / boyta
   // - Helår (komplett): årssumma / boyta
   // - YTD: (ytd × 4 / antal kvartal) / boyta = annualiserat
-  // - Prognos: helårsprognos / boyta
   const avgiftSeries = useMemo(() => {
     if (!boyta) return [];
     if (vAvgift === "q") {
       return quarterly.map((d) => ({ ...d, avgiftKvm: (d.arsavgift * 4) / boyta }));
     }
-    const ys = buildYearSeries();
+    const ys = buildYearSeriesNoForecast();
     return ys.map((d) => {
       if (d.isYtd && forecastData) {
-        // ytd annualiserat
         const nQ = sorted.filter((p) => p.year === forecastData.curYear).length;
         return { ...d, avgiftKvm: (d.arsavgift * 4 / nQ) / boyta };
       }
@@ -386,7 +393,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
           {vResult === "q"
             ? "resultat per kvartal · grön = överskott, röd = underskott"
-            : "helår · ljus stapel = innevarande år hittills, blekare = helårsprognos · felstapel = osäkerhetsspann"}
+            : "helår · 2026 = utfall hittills, Prognos = helårsuppskattning · felstapel = osäkerhetsspann"}
         </p>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={resultSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -458,7 +465,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
 
       <Card title="Driftskostnader" hint={<ViewToggle value={vDrift} onChange={setVDrift} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
-          {vDrift === "q" ? "säsongsvariation per kvartal" : "helår · ljus stapel = innevarande år hittills, blekare = helårsprognos · felstapel = osäkerhetsspann"}
+          {vDrift === "q" ? "säsongsvariation per kvartal" : "helår · 2026 = utfall hittills, Prognos = helårsuppskattning · felstapel = osäkerhetsspann"}
         </p>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={driftSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -491,7 +498,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
 
       <Card title="Räntekostnad" hint={<ViewToggle value={vRanta} onChange={setVRanta} />}>
         <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 6 }}>
-          {vRanta === "q" ? "lägre är bättre · 0-kvartal = upplupen ränta i balansräkningen" : "helår · ljus stapel = innevarande år hittills, blekare = helårsprognos (justerad för dagens räntenivå)"}
+          {vRanta === "q" ? "lägre är bättre · 0-kvartal = upplupen ränta i balansräkningen" : "helår · 2026 visar utfall hittills (justerat för upplupen ränta)"}
         </p>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={rantaSeries} margin={{ left: 4, right: 4, top: 8 }}>
@@ -523,7 +530,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
           {boyta
             ? (vAvgift === "q"
                 ? "kvartalets avgift annualiserad och uttryckt per kvadratmeter"
-                : "helår per kvadratmeter · ljus stapel = innevarande år hittills (annualiserat), blekare = helårsprognos")
+                : "helår per kvadratmeter · 2026 visar nivån hittills, annualiserad")
             : "ange boyta under Data & perioder för att räkna fram kr/m²"}
         </p>
         <ResponsiveContainer width="100%" height={240}>
@@ -548,6 +555,183 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         </Explainer>
       </Card>
     </div>
+  </div>);
+}
+
+/* ---------- Insikter: avvikelser + rekommendationer ---------- */
+function Insikter({ sorted, latest, boyta, resultOf, driftOf, soliditetOf }) {
+  const prior = sorted.slice(0, -1);
+  const sameQ = prior.filter((p) => p.q === latest.q);
+  const prevQ = sorted[sorted.length - 2];
+
+  // Avvikelser per RR-rad: jämför senaste kvartalet mot referens
+  // (snitt av samma kvartal tidigare år; faller tillbaka på snitt av alla tidigare kvartal)
+  // Avskrivningar och räntekostnader exkluderas – de styrs av periodisering/bokföringstidpunkt
+  // snarare än verksamheten, och hanteras separat under rekommendationer.
+  const flows = RR.filter((a) => a.k !== "avskrivningar" && a.k !== "rantekostnader" && a.k !== "ranteintakter");
+  const deviations = flows.map((a) => {
+    const now = num(latest.rr[a.k]);
+    const ref = sameQ.length
+      ? sameQ.reduce((s, p) => s + num(p.rr[a.k]), 0) / sameQ.length
+      : (prior.length ? prior.reduce((s, p) => s + num(p.rr[a.k]), 0) / prior.length : 0);
+    const diff = now - ref;
+    const relevantBase = Math.max(Math.abs(ref), 5000); // ignorera mikroposter
+    const pctChange = ref !== 0 ? diff / Math.abs(ref) : (now !== 0 ? 1 : 0);
+    return { ...a, now, ref, diff, pctChange, relevantBase };
+  });
+
+  // Filtrera: väsentlig storlek (>15 tkr absolut) OCH stor relativ ändring (>25%)
+  const flagged = deviations
+    .filter((d) => Math.abs(d.diff) > 15000 && Math.abs(d.pctChange) > 0.25 && d.relevantBase >= 5000)
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  // För avvikelse: är ökningen bra eller dålig? Intäkt upp = bra, kostnad upp = dålig.
+  const isGood = (d) => (d.s === "in" ? d.diff > 0 : d.diff < 0);
+
+  // ---- Rekommendationer (regelbaserade) ----
+  const recs = [];
+  const soliditet = soliditetOf(latest);
+  const likviditet = num(latest.br.kassa_bank);
+  const lan = num(latest.br.fastighetslan);
+  const ranta = num(latest.rr.rantekostnader);
+  const upplupenRanta = ranta === 0; // 0 bokförd = sannolikt upplupen
+  const driftYtdQ = driftOf(latest);
+  const skuldKvm = boyta ? lan / boyta : null;
+
+  if (upplupenRanta) {
+    recs.push({
+      tone: "warn",
+      title: "Räntekostnaden är inte bokförd detta kvartal",
+      body: "Kvartalet visar 0 kr i räntekostnad, men räntan ligger sannolikt upplupen i balansräkningen (konto 2960). Det får resultatet att se ~149 tkr bättre ut än det faktiskt är. Räkna med den verkliga räntan när ni bedömer kvartalets resultat, och stäm av att den bokförs ikapp nästa period.",
+    });
+  }
+  if (latest.q === 1 && resultOf(latest) < 0) {
+    recs.push({
+      tone: "info",
+      title: "Negativt Q1 är normalt – inte ett varningstecken",
+      body: "Q1 går nästan alltid back i en BRF på grund av vinterns el- och uppvärmningskostnader plus full kvartalsränta. Underskottet brukar tas igen under Q2–Q3. Undvik att dra slutsatser om helåret utifrån Q1 ensamt.",
+    });
+  }
+  // Likviditetsbuffert i förhållande till kvartalets kassakostnader
+  // (exkl. avskrivningar som inte är kassaflöde; ränta räknas till verklig nivå)
+  const rantaQreal = ranta > 0 ? ranta : (() => {
+    const h = sorted.map((p) => num(p.rr.rantekostnader)).filter((v) => v > 0);
+    return h.length ? h[h.length - 1] : 0;
+  })();
+  const kvartalskostnad = RR
+    .filter((a) => a.s === "out" && a.k !== "avskrivningar" && a.k !== "rantekostnader")
+    .reduce((s, a) => s + num(latest.rr[a.k]), 0) + rantaQreal;
+  const monthsBuffer = kvartalskostnad ? (likviditet / (kvartalskostnad / 3)) : null;
+  if (monthsBuffer != null && monthsBuffer < 3) {
+    recs.push({
+      tone: "warn",
+      title: "Tunn likviditetsbuffert",
+      body: `Kassan (${kr(likviditet)}) motsvarar ungefär ${monthsBuffer.toFixed(1)} månaders kostnader. En vanlig tumregel är minst 2–3 månader plus buffert för planerat underhåll. Se över om kommande underhåll kräver att likviditeten byggs upp.`,
+    });
+  } else if (monthsBuffer != null) {
+    recs.push({
+      tone: "good",
+      title: "God likviditet",
+      body: `Kassan (${kr(likviditet)}) räcker till ungefär ${monthsBuffer.toFixed(1)} månaders löpande kostnader, vilket ger en sund buffert mot oförutsedda utgifter och ränteuppgångar.`,
+    });
+  }
+  if (soliditet != null && soliditet >= 0.6) {
+    recs.push({
+      tone: "good",
+      title: `Stark soliditet (${pct(soliditet)})`,
+      body: "Föreningen har en låg belåning i förhållande till tillgångarna. Det ger god motståndskraft, men innebär också att ni har utrymme att antingen amortera mindre och hålla avgiften låg, eller fortsätta amortera för att minska räntekänsligheten – ett strategiskt vägval för styrelsen.",
+    });
+  } else if (soliditet != null && soliditet < 0.3) {
+    recs.push({
+      tone: "warn",
+      title: `Låg soliditet (${pct(soliditet)})`,
+      body: "Hög belåning i förhållande till tillgångarna gör föreningen känslig för ränteuppgångar. Överväg en amorteringsplan och var försiktig med avgiftssänkningar.",
+    });
+  }
+  if (skuldKvm != null) {
+    const lvl = skuldKvm > 15000 ? "hög" : skuldKvm > 8000 ? "måttlig" : "låg";
+    recs.push({
+      tone: skuldKvm > 15000 ? "warn" : "info",
+      title: `Skuldsättning per m²: ${kr(skuldKvm)} (${lvl})`,
+      body: skuldKvm > 15000
+        ? "Skuld per kvadratmeter över ~15 000 kr räknas som hög och innebär betydande räntekänslighet. Amortering bör prioriteras."
+        : "Skuld per kvadratmeter är det viktigaste jämförelsemåttet mellan föreningar. Er nivå är hanterbar; fortsätt följa utvecklingen i takt med amorteringen.",
+    });
+  }
+  // Räntetrend
+  const rantaHistory = sorted.map((p) => num(p.rr.rantekostnader)).filter((v) => v > 0);
+  if (rantaHistory.length >= 4) {
+    const early = rantaHistory.slice(0, 2).reduce((a, b) => a + b, 0) / 2;
+    const lateVals = rantaHistory.slice(-2);
+    const late = lateVals.reduce((a, b) => a + b, 0) / 2;
+    if (late < early * 0.7) {
+      recs.push({
+        tone: "good",
+        title: "Räntekostnaden trendar tydligt nedåt",
+        body: "Räntekostnaden per kvartal har minskat väsentligt över tid, både genom amortering och lägre marknadsränta. Det frigör utrymme i ekonomin – men planera för att räntan kan vända upp igen vid omsättning av lånen.",
+      });
+    }
+  }
+
+  const toneStyle = {
+    warn: { bg: T.claySoft, border: T.clay, label: "ATT BEVAKA" },
+    good: { bg: T.greenSoft, border: T.green, label: "STYRKA" },
+    info: { bg: "#EEF1F5", border: T.blue, label: "ATT NOTERA" },
+  };
+
+  return (<div className="space-y-5">
+    <Card title={`Avvikelser i resultaträkningen – ${latest.label}`}
+      hint={sameQ.length ? `jämfört med samma kvartal tidigare år` : `jämfört med tidigare kvartal`}>
+      {flagged.length === 0 ? (
+        <p style={{ color: T.inkSoft, fontSize: 14 }}>Inga väsentliga avvikelser detta kvartal – posterna ligger i linje med tidigare perioder.</p>
+      ) : (
+        <div className="space-y-2">
+          {flagged.map((d) => {
+            const good = isGood(d);
+            return (
+              <div key={d.k} className="flex items-start justify-between gap-3"
+                style={{ padding: "10px 12px", borderRadius: 10, background: good ? T.greenSoft : T.claySoft, border: `1px solid ${T.line}` }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: T.ink }}>{d.l}</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>
+                    {kr(d.now)} detta kvartal mot referens {kr(d.ref)}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: good ? T.green : T.clay }}>
+                    {d.diff >= 0 ? "+" : ""}{kr(d.diff)}
+                  </div>
+                  <div style={{ fontSize: 11, color: T.faint }}>
+                    {d.pctChange >= 0 ? "+" : ""}{Math.round(d.pctChange * 100)}%
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          <p style={{ fontSize: 11, color: T.faint, marginTop: 6 }}>
+            Grönt = gynnsam avvikelse (högre intäkt eller lägre kostnad), rött = ogynnsam. Endast poster som avviker med mer än 15 tkr och 25 % visas.
+          </p>
+        </div>
+      )}
+    </Card>
+
+    <Card title="Rekommendationer för perioden">
+      <div className="space-y-3">
+        {recs.map((r, i) => {
+          const ts = toneStyle[r.tone];
+          return (
+            <div key={i} style={{ padding: "12px 14px", borderRadius: 10, background: ts.bg, borderLeft: `3px solid ${ts.border}` }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em", color: ts.border, marginBottom: 3 }}>{ts.label}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: T.ink }}>{r.title}</div>
+              <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 3, lineHeight: 1.5 }}>{r.body}</div>
+            </div>
+          );
+        })}
+      </div>
+      <p style={{ fontSize: 11, color: T.faint, marginTop: 12 }}>
+        Rekommendationerna genereras automatiskt utifrån periodens nyckeltal och är ett stöd för styrelsediskussion – inte finansiell rådgivning. Stäm alltid av mot förvaltarens underlag.
+      </p>
+    </Card>
   </div>);
 }
 
