@@ -843,41 +843,57 @@ function Insikter({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, focus
 
 /* ---------- RR comparison table ---------- */
 function RRTable({ sorted, resultOf, driftOf, boyta }) {
+  const [view, setView] = useState("y");
   const groups = [...new Set(RR.map((a) => a.g))];
   const cell = { padding: "7px 10px", fontSize: 13, textAlign: "right" };
   const head = { ...cell, color: T.faint, fontSize: 11, fontWeight: 600, borderBottom: `1px solid ${T.line}` };
   const groupSum = (g, p) => RR.filter((a) => a.g === g).reduce((s, a) => s + (a.s === "in" ? num(p.rr[a.k]) : -num(p.rr[a.k])), 0);
 
-  return (<Card title="Resultaträkning – jämförelse över tid" hint="belopp per period">
+  // Årsvy: summera resultaträkningens poster per år
+  const years = [...new Set(sorted.map((p) => p.year))];
+  const yearCols = years.map((y) => {
+    const qs = sorted.filter((p) => p.year === y);
+    const rr = {};
+    RR.forEach((a) => { rr[a.k] = qs.reduce((s, p) => s + num(p.rr[a.k]), 0); });
+    return { id: String(y), label: qs.length === 4 ? String(y) : `${y} (YTD)`, year: y, nQ: qs.length, rr };
+  });
+  const cols = view === "q" ? sorted : yearCols;
+  const driftKvmOf = (p) => {
+    if (view === "q") return (driftOf(p) * 4) / boyta;
+    const f = p.nQ === 4 ? 1 : 4 / p.nQ;
+    return (driftOf(p) * f) / boyta;
+  };
+
+  return (<Card title="Resultaträkning – jämförelse över tid" hint={<ViewToggle value={view} onChange={setView} />}>
     <div className="overflow-x-auto">
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: view === "q" ? 480 : 360 }}>
         <thead><tr>
           <th style={{ ...head, textAlign: "left" }}>Kategori</th>
-          {sorted.map((p) => <th key={p.id} style={head}>{p.label}</th>)}
+          {cols.map((p) => <th key={p.id} style={head}>{p.label}</th>)}
         </tr></thead>
         <tbody>
           {groups.map((g) => (
             <React.Fragment key={g}>
-              <tr><td colSpan={sorted.length + 1} style={{ padding: "12px 10px 4px", fontSize: 11, fontWeight: 700, color: T.green, letterSpacing: "0.05em" }}>{g.toUpperCase()}</td></tr>
+              <tr><td colSpan={cols.length + 1} style={{ padding: "12px 10px 4px", fontSize: 11, fontWeight: 700, color: T.green, letterSpacing: "0.05em" }}>{g.toUpperCase()}</td></tr>
               {RR.filter((a) => a.g === g).map((a) => (
                 <tr key={a.k} style={{ borderBottom: `1px solid ${T.bg}` }}>
                   <td style={{ padding: "7px 10px", fontSize: 13 }}>{a.l}</td>
-                  {sorted.map((p) => <td key={p.id} style={cell}>{kr(a.s === "in" ? num(p.rr[a.k]) : -num(p.rr[a.k]))}</td>)}
+                  {cols.map((p) => <td key={p.id} style={cell}>{kr(a.s === "in" ? num(p.rr[a.k]) : -num(p.rr[a.k]))}</td>)}
                 </tr>
               ))}
               <tr style={{ borderBottom: `1px solid ${T.line}` }}>
                 <td style={{ padding: "6px 10px", fontSize: 12, fontWeight: 600, color: T.inkSoft }}>Summa {g.toLowerCase()}</td>
-                {sorted.map((p) => <td key={p.id} style={{ ...cell, fontWeight: 600, color: T.inkSoft }}>{kr(groupSum(g, p))}</td>)}
+                {cols.map((p) => <td key={p.id} style={{ ...cell, fontWeight: 600, color: T.inkSoft }}>{kr(groupSum(g, p))}</td>)}
               </tr>
             </React.Fragment>
           ))}
           <tr style={{ borderTop: `2px solid ${T.ink}` }}>
-            <td style={{ padding: "10px", fontWeight: 700 }}>Periodens resultat</td>
-            {sorted.map((p) => { const r = resultOf(p); return <td key={p.id} style={{ ...cell, fontWeight: 700, color: r >= 0 ? T.green : T.clay }}>{kr(r)}</td>; })}
+            <td style={{ padding: "10px", fontWeight: 700 }}>{view === "q" ? "Periodens resultat" : "Årets resultat"}</td>
+            {cols.map((p) => { const r = resultOf(p); return <td key={p.id} style={{ ...cell, fontWeight: 700, color: r >= 0 ? T.green : T.clay }}>{kr(r)}</td>; })}
           </tr>
           {boyta > 0 && (
             <tr><td style={{ padding: "8px 10px", fontSize: 12, color: T.faint }}>Driftskostnad/m² (årstakt)</td>
-              {sorted.map((p) => <td key={p.id} style={{ ...cell, fontSize: 12, color: T.faint }}>{kr((driftOf(p) * 4) / boyta)}</td>)}
+              {cols.map((p) => <td key={p.id} style={{ ...cell, fontSize: 12, color: T.faint }}>{kr(driftKvmOf(p))}</td>)}
             </tr>
           )}
         </tbody>
@@ -888,10 +904,20 @@ function RRTable({ sorted, resultOf, driftOf, boyta }) {
 
 /* ---------- BR comparison table ---------- */
 function BRTable({ sorted, assetsOf, soliditetOf, boyta }) {
+  const [view, setView] = useState("y");
   const groups = [...new Set(BR.map((b) => b.g))];
   const cell = { padding: "7px 10px", fontSize: 13, textAlign: "right" };
   const head = { ...cell, color: T.faint, fontSize: 11, fontWeight: 600, borderBottom: `1px solid ${T.line}` };
   const latest = sorted[sorted.length - 1];
+
+  // Årsvy: balansräkningen är ögonblicksvärden -> ta varje års sista kvartal (utgående balans)
+  const years = [...new Set(sorted.map((p) => p.year))];
+  const yearCols = years.map((y) => {
+    const qs = sorted.filter((p) => p.year === y);
+    const last = qs[qs.length - 1];
+    return { ...last, id: String(y), label: qs.length === 4 ? String(y) : `${y} (YTD)` };
+  });
+  const cols = view === "q" ? sorted : yearCols;
 
   return (<div className="space-y-5">
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -900,28 +926,31 @@ function BRTable({ sorted, assetsOf, soliditetOf, boyta }) {
       <KpiTile label="Fastighetslån" value={krShort(num(latest.br.fastighetslan))} accent={T.gold} />
       <KpiTile label="Skuld / m²" value={boyta ? kr(num(latest.br.fastighetslan) / boyta) : "ange boyta"} accent={T.gold} />
     </div>
-    <Card title="Balansräkning – jämförelse över tid" hint="utgående balans per period">
+    <Card title="Balansräkning – jämförelse över tid" hint={<ViewToggle value={view} onChange={setView} />}>
+      <p style={{ fontSize: 11, color: T.faint, marginTop: -6, marginBottom: 8 }}>
+        utgående balans {view === "q" ? "per kvartal" : "vid årets slut (senaste kvartalet för pågående år)"}
+      </p>
       <div className="overflow-x-auto">
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: view === "q" ? 480 : 360 }}>
           <thead><tr>
             <th style={{ ...head, textAlign: "left" }}>Post</th>
-            {sorted.map((p) => <th key={p.id} style={head}>{p.label}</th>)}
+            {cols.map((p) => <th key={p.id} style={head}>{p.label}</th>)}
           </tr></thead>
           <tbody>
             {groups.map((g) => (
               <React.Fragment key={g}>
-                <tr><td colSpan={sorted.length + 1} style={{ padding: "12px 10px 4px", fontSize: 11, fontWeight: 700, color: T.green, letterSpacing: "0.05em" }}>{g.toUpperCase()}</td></tr>
+                <tr><td colSpan={cols.length + 1} style={{ padding: "12px 10px 4px", fontSize: 11, fontWeight: 700, color: T.green, letterSpacing: "0.05em" }}>{g.toUpperCase()}</td></tr>
                 {BR.filter((b) => b.g === g).map((b) => (
                   <tr key={b.k} style={{ borderBottom: `1px solid ${T.bg}` }}>
                     <td style={{ padding: "7px 10px", fontSize: 13 }}>{b.l}</td>
-                    {sorted.map((p) => <td key={p.id} style={cell}>{kr(num(p.br[b.k]))}</td>)}
+                    {cols.map((p) => <td key={p.id} style={cell}>{kr(num(p.br[b.k]))}</td>)}
                   </tr>
                 ))}
               </React.Fragment>
             ))}
             <tr style={{ borderTop: `2px solid ${T.ink}` }}>
               <td style={{ padding: "10px", fontWeight: 700 }}>Soliditet</td>
-              {sorted.map((p) => <td key={p.id} style={{ ...cell, fontWeight: 700, color: T.green }}>{pct(soliditetOf(p))}</td>)}
+              {cols.map((p) => <td key={p.id} style={{ ...cell, fontWeight: 700, color: T.green }}>{pct(soliditetOf(p))}</td>)}
             </tr>
           </tbody>
         </table>
