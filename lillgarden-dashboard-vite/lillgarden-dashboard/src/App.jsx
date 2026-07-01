@@ -550,7 +550,7 @@ function Overview({ sorted, latest, boyta, resultOf, driftOf, soliditetOf, ackYe
         <Explainer>
           <strong>Räntekostnad</strong> = den ränta föreningen betalar till sina långivare på fastighetslånen (BAS-konto 8415, "räntekostnader för andra skulder till kreditinstitut"). Det är en separat post från själva amorteringen – amorteringen minskar lånet (syns i grafen ovan), räntan är en löpande kostnad som påverkar resultatet.
           <p style={{ marginTop: 6 }}>
-            Ingår även <strong>upplupna räntekostnader</strong>: även när ett kvartal visar 0 i bokförd ränta (t.ex. Q2 2026) räknar dashboarden med periodens verkliga räntebelastning, eftersom obetald ränta då ligger som en upplupen kostnad i balansräkningen (konto 2960). Det är en periodiseringseffekt – inte att räntan försvann.
+            Ingår även <strong>upplupna räntekostnader</strong>: om ett kvartal skulle visa 0 kr i bokförd ränta räknar dashboarden ändå med periodens verkliga räntebelastning, eftersom obetald ränta då ligger som en upplupen kostnad i balansräkningen (konto 2960). Det är en periodiseringseffekt – inte att räntan försvinner.
           </p>
           <p style={{ marginTop: 6 }}>
             Räntan har sjunkit kraftigt de senaste två åren från ~270 tkr/kvartal under 2023–2024 till ~149 tkr/kvartal under 2026, både genom amortering och lägre marknadsränta.
