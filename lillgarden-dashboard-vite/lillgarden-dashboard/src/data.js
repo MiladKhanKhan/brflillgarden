@@ -124,12 +124,12 @@ export const SEED_PERIODS = [
     br: { byggnader_mark: 93161493, fordringar: 22491, kassa_bank: 672561,
       eget_kapital: 69638190, fastighetslan: 23937432, ovriga_skulder: 280923 } },
   { id: "2026-Q2", label: "Q2 2026", year: 2026, q: 2, date: "2026-06-30",
-    rr: { arsavgifter: 291618, el_vatten_intakter: 154527, hyror_avgifter: 3338, ovriga_intakter: 0,
-      el: 26773, vatten: 4344, avfall: 2216, forsakring: 3275, bredband: 2439, skotsel_underhall: 4076,
-      forvaltningsarvode: 2101, revision: 944, ovrig_admin: 3400, personal: 38637, avskrivningar: 0,
-      ranteintakter: 0, rantekostnader: 0 },
-    br: { byggnader_mark: 93161493, fordringar: 68693, kassa_bank: 780855,
-      eget_kapital: 69999467, fastighetslan: 23874932, ovriga_skulder: 136642 } },
+    rr: { arsavgifter: 291618, el_vatten_intakter: 156679, hyror_avgifter: 3336, ovriga_intakter: 2036,
+      el: 50665, vatten: 8689, avfall: 4432, forsakring: 6670, bredband: 2439, skotsel_underhall: 4076,
+      forvaltningsarvode: 2101, revision: 944, ovrig_admin: 6327, personal: 38637, avskrivningar: 0,
+      ranteintakter: 0, rantekostnader: 74307 },
+    br: { byggnader_mark: 93161493, fordringar: 59179, kassa_bank: 801319,
+      eget_kapital: 69855417, fastighetslan: 23874932, ovriga_skulder: 291641 } },
 ];
 
 export const DEFAULT_SETTINGS = {
